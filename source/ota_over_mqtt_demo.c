@@ -724,8 +724,120 @@ static void prvProcessIncomingData( void * pxSubscriptionContext,
 
 /*-----------------------------------------------------------*/
 
-static BaseType_t xDemoEncountered = pdFALSE;
+static BaseType_t xDemoEncounteredError = pdFALSE;
 static BaseType_t xExitActionJobReceived = pdFALSE;
+
+/**
+ * @brief Static buffer used to hold the job ID of the single job that
+ * is executed at a time in the demo. This buffer allows re-use of the MQTT
+ * connection context for sending status updates of a job while it is being
+ * processed.
+ */
+static uint8_t usJobIdBuffer[1024];
+
+/**
+ * @brief Static buffer used to hold the job document of the single job that
+ * is executed at a time in the demo. This buffer allows re-use of the MQTT
+ * connection context for sending status updates of a job while it is being processed.
+ */
+static uint8_t usJobsDocumentBuffer[1024];
+
+
+/**
+ * @brief The JSON key of the execution object.
+ *
+ * Job documents received from the AWS IoT Jobs service are in JSON format.
+ * All such JSON documents will contain this key, whose value represents the unique
+ * identifier of a Job.
+ */
+#define jobsexampleEXECUTION_KEY                    "execution"
+
+ /**
+  * @brief The length of #jobsexampleEXECUTION_KEY.
+  */
+#define jobsexampleEXECUTION_KEY_LENGTH             ( sizeof( jobsexampleEXECUTION_KEY ) - 1 )
+
+  /**
+   * @brief The query key to use for searching the Job ID key in message payload
+   * from AWS IoT Jobs service.
+   *
+   * Job documents received from the AWS IoT Jobs service are in JSON format.
+   * All such JSON documents will contain this key, whose value represents the unique
+   * identifier of a Job.
+   */
+#define jobsexampleQUERY_KEY_FOR_JOB_ID             jobsexampleEXECUTION_KEY  ".jobId"
+
+   /**
+    * @brief The length of #jobsexampleQUERY_KEY_FOR_JOB_ID.
+    */
+#define jobsexampleQUERY_KEY_FOR_JOB_ID_LENGTH      ( sizeof( jobsexampleQUERY_KEY_FOR_JOB_ID ) - 1 )
+
+    /**
+     * @brief The query key to use for searching the Jobs document ID key in message payload
+     * from AWS IoT Jobs service.
+     *
+     * Job documents received from the AWS IoT Jobs service are in JSON format.
+     * All such JSON documents will contain this key, whose value represents the unique
+     * identifier of a Job.
+     */
+#define jobsexampleQUERY_KEY_FOR_JOBS_DOC           jobsexampleEXECUTION_KEY  ".jobDocument"
+
+     /**
+      * @brief The length of #jobsexampleQUERY_KEY_FOR_JOBS_DOC.
+      */
+#define jobsexampleQUERY_KEY_FOR_JOBS_DOC_LENGTH    ( sizeof( jobsexampleQUERY_KEY_FOR_JOBS_DOC ) - 1 )
+
+      /**
+       * @brief The query key to use for searching the Action key in Jobs document
+       * from AWS IoT Jobs service.
+       *
+       * This demo program expects this key to be in the Job document. It is a key
+       * specific to this demo.
+       */
+#define jobsexampleQUERY_KEY_FOR_ACTION             "action"
+
+       /**
+        * @brief The length of #jobsexampleQUERY_KEY_FOR_ACTION.
+        */
+#define jobsexampleQUERY_KEY_FOR_ACTION_LENGTH      ( sizeof( jobsexampleQUERY_KEY_FOR_ACTION ) - 1 )
+
+        /**
+         * @brief The query key to use for searching the Message key in Jobs document
+         * from AWS IoT Jobs service.
+         *
+         * This demo program expects this key to be in the Job document if the "action"
+         * is either "publish" or "print". It represents the message that should be
+         * published or printed, respectively.
+         */
+#define jobsexampleQUERY_KEY_FOR_MESSAGE            "message"
+
+         /**
+          * @brief The length of #jobsexampleQUERY_KEY_FOR_MESSAGE.
+          */
+#define jobsexampleQUERY_KEY_FOR_MESSAGE_LENGTH     ( sizeof( jobsexampleQUERY_KEY_FOR_MESSAGE ) - 1 )
+
+          /**
+           * @brief The query key to use for searching the topic key in Jobs document
+           * from AWS IoT Jobs service.
+           *
+           * This demo program expects this key to be in the Job document if the "action"
+           * is "publish". It represents the MQTT topic on which the message should be
+           * published.
+           */
+#define jobsexampleQUERY_KEY_FOR_TOPIC              "topic"
+
+           /**
+            * @brief The length of #jobsexampleQUERY_KEY_FOR_TOPIC.
+            */
+#define jobsexampleQUERY_KEY_FOR_TOPIC_LENGTH       ( sizeof( jobsexampleQUERY_KEY_FOR_TOPIC ) - 1 )
+
+            /**
+             * @brief Format a JSON status message.
+             *
+             * @param[in] x one of "IN_PROGRESS", "SUCCEEDED", or "FAILED"
+             */
+#define MAKE_STATUS_REPORT( x )    "{\"status\":\"" x "\"}"
+
 
 /**
  * @brief Currently supported actions that a job document can specify.
@@ -766,7 +878,7 @@ static void prvSendUpdateForJob( char * pcJobId,
                                  uint16_t usJobIdLength,
                                  const char * pcJobStatusReport )
 {
-    char pUpdateJobTopic[ JOBS_API_MAX_LENGTH( THING_NAME_LENGTH ) ];
+    char pUpdateJobTopic[ JOBS_API_MAX_LENGTH( democonfigCLIENT_IDENTIFIER_LENGTH ) ];
     size_t ulTopicLength = 0;
     JobsStatus_t xStatus = JobsSuccess;
 
@@ -1128,7 +1240,7 @@ static void prvProcessIncomingJobMessage( void * pxSubscriptionContext,
         else
         {
             LogWarn( ( "Received an unexpected messages from AWS IoT Jobs service: "
-                       "JobsTopicType=%u", topicType ) );
+                       "JobsTopicType=%u", api ) );
         }
     }
 }
