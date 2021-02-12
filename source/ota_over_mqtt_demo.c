@@ -63,6 +63,12 @@
 /* OTA Library include. */
 #include "ota.h"
 
+/* Jobs library include. */
+#include "jobs.h"
+
+/* coreJSON library include. */
+#include "core_json.h"
+
 /* OTA Library Interface include. */
 #include "ota_os_freertos.h"
 #include "ota_mqtt_interface.h"
@@ -718,6 +724,331 @@ static void prvProcessIncomingData( void * pxSubscriptionContext,
 
 /*-----------------------------------------------------------*/
 
+static BaseType_t xDemoEncountered = pdFALSE;
+static BaseType_t xExitActionJobReceived = pdFALSE;
+
+/**
+ * @brief Currently supported actions that a job document can specify.
+ */
+typedef enum JobActionType
+{
+    JOB_ACTION_PRINT,   /**< Print a message. */
+    JOB_ACTION_PUBLISH, /**< Publish a message to an MQTT topic. */
+    JOB_ACTION_EXIT,    /**< Exit the demo. */
+    JOB_ACTION_UNKNOWN  /**< Unknown action. */
+} JobActionType;
+
+static JobActionType prvGetAction( const char * pcAction,
+                                   size_t xActionLength )
+{
+    JobActionType xAction = JOB_ACTION_UNKNOWN;
+
+    configASSERT( pcAction != NULL );
+
+    if( strncmp( pcAction, "print", xActionLength ) == 0 )
+    {
+        xAction = JOB_ACTION_PRINT;
+    }
+    else if( strncmp( pcAction, "publish", xActionLength ) == 0 )
+    {
+        xAction = JOB_ACTION_PUBLISH;
+    }
+    else if( strncmp( pcAction, "exit", xActionLength ) == 0 )
+    {
+        xAction = JOB_ACTION_EXIT;
+    }
+
+    return xAction;
+}
+
+
+static void prvSendUpdateForJob( char * pcJobId,
+                                 uint16_t usJobIdLength,
+                                 const char * pcJobStatusReport )
+{
+    char pUpdateJobTopic[ JOBS_API_MAX_LENGTH( THING_NAME_LENGTH ) ];
+    size_t ulTopicLength = 0;
+    JobsStatus_t xStatus = JobsSuccess;
+
+    configASSERT( ( pcJobId != NULL ) && ( usJobIdLength > 0 ) );
+    configASSERT( pcJobStatusReport != NULL );
+
+    /* Generate the PUBLISH topic string for the UpdateJobExecution API of AWS IoT Jobs service. */
+    xStatus = Jobs_Update( pUpdateJobTopic,
+                           sizeof( pUpdateJobTopic ),
+                           democonfigCLIENT_IDENTIFIER,
+                           democonfigCLIENT_IDENTIFIER_LENGTH,
+                           pcJobId,
+                           usJobIdLength,
+                           &ulTopicLength );
+
+    if( xStatus == JobsSuccess )
+    {
+        BaseType_t result;
+        MQTTStatus_t mqttStatus = MQTTBadParameter;
+        MQTTPublishInfo_t publishInfo = { 0 };
+        TaskHandle_t xTaskHandle;
+        uint32_t ulNotifiedValue;
+        CommandInfo_t xCommandParams = { 0 };
+
+        publishInfo.pTopicName = pUpdateJobTopic;
+        publishInfo.topicNameLength = ulTopicLength;
+        publishInfo.qos = MQTTQoS1;
+        publishInfo.pPayload = pcJobStatusReport;
+        publishInfo.payloadLength = strlen( pcJobStatusReport );
+
+        xTaskHandle = xTaskGetCurrentTaskHandle();
+        xTaskNotifyStateClear( NULL );
+
+        xCommandParams.blockTimeMs = otaexampleMQTT_TIMEOUT_MS;
+        xCommandParams.cmdCompleteCallback = prvCommandCallback;
+        xCommandParams.pCmdCompleteCallbackContext = ( void * ) xTaskHandle;
+
+        mqttStatus = MQTTAgent_Publish( &xGlobalMqttAgentContext,
+                                        &publishInfo,
+                                        &xCommandParams );
+
+        /* Wait for command to complete so MQTTSubscribeInfo_t remains in scope for the
+         * duration of the command. */
+        if( mqttStatus == MQTTSuccess )
+        {
+            result = xTaskNotifyWait( 0, otaexampleMAX_UINT32, &ulNotifiedValue, pdMS_TO_TICKS( otaexampleMQTT_TIMEOUT_MS ) );
+
+            if( result != pdTRUE )
+            {
+                mqttStatus = MQTTSendFailed;
+            }
+            else
+            {
+                mqttStatus = ( MQTTStatus_t ) ( ulNotifiedValue );
+            }
+        }
+    }
+    else
+    {
+        LogError( ( "Failed to generate Publish topic string for sending job update: "
+                    "JobID=%.*s, NewStatePayload=%s",
+                    usJobIdLength, pcJobId, pcJobStatusReport ) );
+    }
+}
+
+static void prvProcessJobDocument( char * pcJobId,
+                                   uint16_t usJobIdLength,
+                                   char * pcJobDocument,
+                                   uint16_t jobDocumentLength )
+{
+    char * pcAction = NULL;
+    size_t uActionLength = 0U;
+    JSONStatus_t xJsonStatus = JSONSuccess;
+
+    configASSERT( pcJobId != NULL );
+    configASSERT( usJobIdLength > 0 );
+    configASSERT( pcJobDocument != NULL );
+    configASSERT( jobDocumentLength > 0 );
+
+    xJsonStatus = JSON_Search( pcJobDocument,
+                               jobDocumentLength,
+                               jobsexampleQUERY_KEY_FOR_ACTION,
+                               jobsexampleQUERY_KEY_FOR_ACTION_LENGTH,
+                               &pcAction,
+                               &uActionLength );
+
+    if( xJsonStatus != JSONSuccess )
+    {
+        LogError( ( "Job document schema is invalid. Missing expected \"action\" key in document." ) );
+        prvSendUpdateForJob( pcJobId, usJobIdLength, MAKE_STATUS_REPORT( "FAILED" ) );
+    }
+    else
+    {
+        JobActionType xActionType = JOB_ACTION_UNKNOWN;
+        char * pcMessage = NULL;
+        size_t ulMessageLength = 0U;
+
+        xActionType = prvGetAction( pcAction, uActionLength );
+
+        switch( xActionType )
+        {
+            case JOB_ACTION_EXIT:
+                LogInfo( ( "Received job contains \"exit\" action. Updating state of demo." ) );
+                xExitActionJobReceived = pdTRUE;
+                prvSendUpdateForJob( pcJobId, usJobIdLength, MAKE_STATUS_REPORT( "SUCCEEDED" ) );
+
+                /* Terminate the MQTT Agent task and therefore, the application. */
+                CommandInfo_t xCommandParams = { 0 };
+                xCommandParams.blockTimeMs = otaexampleMQTT_TIMEOUT_MS;
+                xCommandParams.cmdCompleteCallback = NULL;
+                xCommandParams.pCmdCompleteCallbackContext = NULL;
+
+                MQTTAgent_Terminate( &xGlobalMqttAgentContext, &xCommandParams );
+
+                break;
+
+            case JOB_ACTION_PRINT:
+                LogInfo( ( "Received job contains \"print\" action." ) );
+
+                xJsonStatus = JSON_Search( pcJobDocument,
+                                           jobDocumentLength,
+                                           jobsexampleQUERY_KEY_FOR_MESSAGE,
+                                           jobsexampleQUERY_KEY_FOR_MESSAGE_LENGTH,
+                                           &pcMessage,
+                                           &ulMessageLength );
+
+                if( xJsonStatus == JSONSuccess )
+                {
+                    /* Print the given message if the action is "print". */
+                    LogInfo( ( "\r\n"
+                               "/*-----------------------------------------------------------*/\r\n"
+                               "\r\n"
+                               "%.*s\r\n"
+                               "\r\n"
+                               "/*-----------------------------------------------------------*/\r\n"
+                               "\r\n", ulMessageLength, pcMessage ) );
+                    prvSendUpdateForJob( pcJobId, usJobIdLength, MAKE_STATUS_REPORT( "SUCCEEDED" ) );
+                }
+                else
+                {
+                    LogError( ( "Job document schema is invalid. Missing \"message\" for \"print\" action type." ) );
+                    prvSendUpdateForJob( pcJobId, usJobIdLength, MAKE_STATUS_REPORT( "FAILED" ) );
+                }
+
+                break;
+
+            case JOB_ACTION_PUBLISH:
+                LogInfo( ( "Received job contains \"publish\" action." ) );
+                char * pcTopic = NULL;
+                size_t ulTopicLength = 0U;
+
+                xJsonStatus = JSON_Search( pcJobDocument,
+                                           jobDocumentLength,
+                                           jobsexampleQUERY_KEY_FOR_TOPIC,
+                                           jobsexampleQUERY_KEY_FOR_TOPIC_LENGTH,
+                                           &pcTopic,
+                                           &ulTopicLength );
+
+                /* Search for "topic" key in the Jobs document.*/
+                if( xJsonStatus != JSONSuccess )
+                {
+                    LogError( ( "Job document schema is invalid. Missing \"topic\" key for \"publish\" action type." ) );
+                    prvSendUpdateForJob( pcJobId, usJobIdLength, MAKE_STATUS_REPORT( "FAILED" ) );
+                }
+                else
+                {
+                    xJsonStatus = JSON_Search( pcJobDocument,
+                                               jobDocumentLength,
+                                               jobsexampleQUERY_KEY_FOR_MESSAGE,
+                                               jobsexampleQUERY_KEY_FOR_MESSAGE_LENGTH,
+                                               &pcMessage,
+                                               &ulMessageLength );
+
+                    /* Search for "message" key in Jobs document.*/
+                    if( xJsonStatus == JSONSuccess )
+                    {
+                        /* Publish to the parsed MQTT topic with the message obtained from
+                         * the Jobs document.*/
+                        if( xPublishToTopic( &xMqttContext,
+                                             pcTopic,
+                                             ulTopicLength,
+                                             pcMessage,
+                                             ulMessageLength ) == pdFALSE )
+                        {
+                            /* Set global flag to terminate demo as PUBLISH operation to execute job failed. */
+                            xDemoEncounteredError = pdTRUE;
+
+                            LogError( ( "Failed to execute job with \"publish\" action: Failed to publish to topic. "
+                                        "JobID=%.*s, Topic=%.*s",
+                                        usJobIdLength, pcJobId, ulTopicLength, pcTopic ) );
+                        }
+
+                        prvSendUpdateForJob( pcJobId, usJobIdLength, MAKE_STATUS_REPORT( "SUCCEEDED" ) );
+                    }
+                    else
+                    {
+                        LogError( ( "Job document schema is invalid. Missing \"message\" key for \"publish\" action type." ) );
+                        prvSendUpdateForJob( pcJobId, usJobIdLength, MAKE_STATUS_REPORT( "FAILED" ) );
+                    }
+                }
+
+                break;
+
+            default:
+                configPRINTF( ( "Received Job document with unknown action %.*s.",
+                                uActionLength, pcAction ) );
+                break;
+        }
+    }
+}
+
+static void prvNextJobHandler( MQTTPublishInfo_t * pxPublishInfo )
+{
+    configASSERT( pxPublishInfo != NULL );
+    configASSERT( ( pxPublishInfo->pPayload != NULL ) && ( pxPublishInfo->payloadLength > 0 ) );
+
+    /* Check validity of JSON message response from server.*/
+    if( JSON_Validate( pxPublishInfo->pPayload, pxPublishInfo->payloadLength ) != JSONSuccess )
+    {
+        LogError( ( "Received invalid JSON payload from AWS IoT Jobs service" ) );
+    }
+    else
+    {
+        char * pcJobId = NULL;
+        size_t ulJobIdLength = 0UL;
+
+        /* Parse the Job ID of the next pending job execution from the JSON payload. */
+        if( JSON_Search( ( char * ) pxPublishInfo->pPayload,
+                         pxPublishInfo->payloadLength,
+                         jobsexampleQUERY_KEY_FOR_JOB_ID,
+                         jobsexampleQUERY_KEY_FOR_JOB_ID_LENGTH,
+                         &pcJobId,
+                         &ulJobIdLength ) != JSONSuccess )
+        {
+            LogWarn( ( "Failed to parse Job ID in message received from AWS IoT Jobs service: "
+                       "IncomingTopic=%.*s, Payload=%.*s",
+                       pxPublishInfo->topicNameLength, pxPublishInfo->pTopicName,
+                       pxPublishInfo->payloadLength, pxPublishInfo->pPayload ) );
+        }
+        else
+        {
+            char * pcJobDocLoc = NULL;
+            size_t ulJobDocLength = 0UL;
+
+            configASSERT( ulJobIdLength < JOBS_JOBID_MAX_LENGTH );
+            LogInfo( ( "Received a Job from AWS IoT Jobs service: JobId=%.*s",
+                       ulJobIdLength, pcJobId ) );
+
+            /* Copy the Job ID in the global buffer. This is done so that
+             * the MQTT context's network buffer can be used for sending jobs
+             * status updates to the AWS IoT Jobs service. */
+            memcpy( usJobIdBuffer, pcJobId, ulJobIdLength );
+
+            /* Search for the jobs document in the payload. */
+            if( JSON_Search( ( char * ) pxPublishInfo->pPayload,
+                             pxPublishInfo->payloadLength,
+                             jobsexampleQUERY_KEY_FOR_JOBS_DOC,
+                             jobsexampleQUERY_KEY_FOR_JOBS_DOC_LENGTH,
+                             &pcJobDocLoc,
+                             &ulJobDocLength ) != JSONSuccess )
+            {
+                LogWarn( ( "Failed to parse document of next job received from AWS IoT Jobs service: "
+                           "Topic=%.*s, JobID=%.*s",
+                           pxPublishInfo->topicNameLength, pxPublishInfo->pTopicName,
+                           ulJobIdLength, pcJobId ) );
+            }
+            else
+            {
+                /* Copy the Job document in buffer. This is done so that the MQTT connection buffer can
+                 * be used for sending jobs status updates to the AWS IoT Jobs service. */
+                memcpy( usJobsDocumentBuffer, pcJobDocLoc, ulJobDocLength );
+
+                /* Process the Job document and execute the job. */
+                prvProcessJobDocument( usJobIdBuffer,
+                                       ( uint16_t ) ulJobIdLength,
+                                       usJobsDocumentBuffer,
+                                       ulJobDocLength );
+            }
+        }
+    }
+}
+
 static void prvProcessIncomingJobMessage( void * pxSubscriptionContext,
                                           MQTTPublishInfo_t * pPublishInfo )
 {
@@ -732,21 +1063,73 @@ static void prvProcessIncomingJobMessage( void * pxSubscriptionContext,
 
     configASSERT( pPublishInfo->payloadLength <= OTA_DATA_BLOCK_SIZE );
 
-    pData = prvOTAEventBufferGet();
+    /* Determine if this is an OTA or a custom job. */
+    JobsTopic_t api;
+    char * pJobId = NULL;
+    uint16_t jobIdLength;
+    JobsStatus_t status = JobsSuccess;
+    status = Jobs_MatchTopic( pPublishInfo->pTopicName,
+                              pPublishInfo->topicNameLength,
+                              democonfigCLIENT_IDENTIFIER,
+                              sizeof( democonfigCLIENT_IDENTIFIER ) - 1U,
+                              &api,
+                              &pJobId,
+                              &jobIdLength );
+    configASSERT( status == JobsSuccess );
 
-    if( pData != NULL )
+    /* If it is an OTA job, signal the OTA agent to process it. */
+    if( strncmp( pJobId, "AFR_OTA", ( strlen( "AFR_OTA" ) == 0 ) ) )
     {
-        memcpy( pData->data, pPublishInfo->pPayload, pPublishInfo->payloadLength );
-        pData->dataLength = pPublishInfo->payloadLength;
-        eventMsg.eventId = OtaAgentEventReceivedJobDocument;
-        eventMsg.pEventData = pData;
+        pData = prvOTAEventBufferGet();
 
-        /* Send job document received event. */
-        OTA_SignalEvent( &eventMsg );
+        if( pData != NULL )
+        {
+            memcpy( pData->data, pPublishInfo->pPayload, pPublishInfo->payloadLength );
+            pData->dataLength = pPublishInfo->payloadLength;
+            eventMsg.eventId = OtaAgentEventReceivedJobDocument;
+            eventMsg.pEventData = pData;
+
+            /* Send job document received event. */
+            OTA_SignalEvent( &eventMsg );
+        }
+        else
+        {
+            LogError( ( "Error: No OTA data buffers available.\r\n" ) );
+        }
     }
+    /* If it is a custom job, use custom application code to process it. */
     else
     {
-        LogError( ( "Error: No OTA data buffers available.\r\n" ) );
+        /* Upon successful return, the messageType has been filled in. */
+        if( ( api == JobsDescribeSuccess ) || ( api == JobsNextJobChanged ) )
+        {
+            /* Handler function to process payload. */
+            prvNextJobHandler( pPublishInfo );
+        }
+        else if( api == JobsUpdateSuccess )
+        {
+            LogInfo( ( "Job update status request has been accepted by AWS Iot Jobs service." ) );
+        }
+        else if( api == JobsStartNextFailed )
+        {
+            LogWarn( ( "Request for next job description rejected: RejectedResponse=%.*s.",
+                       pPublishInfo->payloadLength,
+                       ( const char * ) pPublishInfo->pPayload ) );
+        }
+        else if( api == JobsUpdateFailed )
+        {
+            LogWarn( ( "Request for job update rejected: RejectedResponse=%.*s.",
+                       pPublishInfo->payloadLength,
+                       ( const char * ) pPublishInfo->pPayload ) );
+
+            LogError( ( "Terminating demo as request to update job status has been rejected by "
+                        "AWS IoT Jobs service..." ) );
+        }
+        else
+        {
+            LogWarn( ( "Received an unexpected messages from AWS IoT Jobs service: "
+                       "JobsTopicType=%u", topicType ) );
+        }
     }
 }
 

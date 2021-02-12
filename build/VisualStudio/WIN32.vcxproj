@@ -20,6 +20,7 @@
     <ClCompile Include="..\..\lib\AWS\ota\source\ota_mqtt.c" />
     <ClCompile Include="..\..\lib\AWS\ota\source\portable\os\ota_os_freertos.c" />
     <ClCompile Include="..\..\lib\FreeRTOS\coreJSON\source\core_json.c" />
+    <ClCompile Include="..\..\lib\AWS\Jobs\source\jobs.c" />
     <ClCompile Include="..\..\lib\FreeRTOS\freertos-kernel\event_groups.c" />
     <ClCompile Include="..\..\lib\FreeRTOS\freertos-kernel\list.c" />
     <ClCompile Include="..\..\lib\FreeRTOS\freertos-kernel\portable\MemMang\heap_4.c" />
@@ -71,6 +72,7 @@
   <ItemGroup>
     <ClInclude Include="..\..\lib\AWS\ota-pal\Win32\ota_pal.h" />
     <ClInclude Include="..\..\lib\AWS\ota\source\portable\os\ota_os_freertos.h" />
+    <ClInclude Include="..\..\lib\AWS\Jobs\source\include\jobs.h" />
     <ClInclude Include="..\..\lib\FreeRTOS\coreJSON\source\include\core_json.h" />
     <ClInclude Include="..\..\lib\FreeRTOS\freertos-kernel\include\event_groups.h" />
     <ClInclude Include="..\..\lib\FreeRTOS\freertos-kernel\include\FreeRTOS.h" />
