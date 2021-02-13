@@ -903,9 +903,9 @@ static void prvSendUpdateForJob( char * pcJobId,
 
     if( xStatus == JobsSuccess )
     {
-        LogInfo(("Sending status update for job: "
-                "Topic=%.*s, JobID=%.*s, NewStatePayload=%s",
-                ulTopicLength, pUpdateJobTopic, usJobIdLength, pcJobId, pcJobStatusReport));
+        LogInfo( ( "Sending status update for job: "
+                   "Topic=%.*s, JobID=%.*s, NewStatePayload=%s",
+                   ulTopicLength, pUpdateJobTopic, usJobIdLength, pcJobId, pcJobStatusReport ) );
 
         OtaMqttStatus_t status = prvMQTTPublish( pUpdateJobTopic,
                                                  ulTopicLength,
@@ -1099,70 +1099,70 @@ static void prvNextJobHandler( MQTTPublishInfo_t * pxPublishInfo )
         }
         else
         {
-            char* pcJobDocLoc = NULL;
+            char * pcJobDocLoc = NULL;
             size_t ulJobDocLength = 0UL;
 
-            configASSERT(ulJobIdLength < JOBS_JOBID_MAX_LENGTH);
-            LogInfo(("Received a Job from AWS IoT Jobs service: JobId=%.*s",
-                ulJobIdLength, pcJobId));
+            configASSERT( ulJobIdLength < JOBS_JOBID_MAX_LENGTH );
+            LogInfo( ( "Received a Job from AWS IoT Jobs service: JobId=%.*s",
+                       ulJobIdLength, pcJobId ) );
 
             /* If it is an OTA job, signal the OTA agent to process it. */
-            if (strncmp(pcJobId, "AFR_OTA", strlen("AFR_OTA")) == 0)
+            if( strncmp( pcJobId, "AFR_OTA", strlen( "AFR_OTA" ) ) == 0 )
             {
-                OtaEventData_t* pData;
+                OtaEventData_t * pData;
                 OtaEventMsg_t eventMsg = { 0 };
 
                 pData = prvOTAEventBufferGet();
 
-                if (pData != NULL)
+                if( pData != NULL )
                 {
-                    memcpy(pData->data, pxPublishInfo->pPayload, pxPublishInfo->payloadLength);
+                    memcpy( pData->data, pxPublishInfo->pPayload, pxPublishInfo->payloadLength );
                     pData->dataLength = pxPublishInfo->payloadLength;
                     eventMsg.eventId = OtaAgentEventReceivedJobDocument;
                     eventMsg.pEventData = pData;
 
                     /* Send job document received event. */
-                    OTA_SignalEvent(&eventMsg);
+                    OTA_SignalEvent( &eventMsg );
                 }
                 else
                 {
-                    LogError(("Error: No OTA data buffers available.\r\n"));
+                    LogError( ( "Error: No OTA data buffers available.\r\n" ) );
                 }
             }
             /* If it is a custom job, use custom application code to process it. */
             else
             {
-                (void)xSemaphoreTake(xCustomJobDataSemaphore, portMAX_DELAY);
+                ( void ) xSemaphoreTake( xCustomJobDataSemaphore, portMAX_DELAY );
 
                 /* Copy the Job ID in the global buffer. This is done so that
                  * the MQTT context's network buffer can be used for sending jobs
                  * status updates to the AWS IoT Jobs service. */
-                memcpy(usJobIdBuffer, pcJobId, ulJobIdLength);
+                memcpy( usJobIdBuffer, pcJobId, ulJobIdLength );
                 jobIdLength = ulJobIdLength;
 
                 /* Search for the jobs document in the payload. */
-                if (JSON_Search((char*)pxPublishInfo->pPayload,
-                    pxPublishInfo->payloadLength,
-                    jobsexampleQUERY_KEY_FOR_JOBS_DOC,
-                    jobsexampleQUERY_KEY_FOR_JOBS_DOC_LENGTH,
-                    &pcJobDocLoc,
-                    &ulJobDocLength) != JSONSuccess)
+                if( JSON_Search( ( char * ) pxPublishInfo->pPayload,
+                                 pxPublishInfo->payloadLength,
+                                 jobsexampleQUERY_KEY_FOR_JOBS_DOC,
+                                 jobsexampleQUERY_KEY_FOR_JOBS_DOC_LENGTH,
+                                 &pcJobDocLoc,
+                                 &ulJobDocLength ) != JSONSuccess )
                 {
-                    LogWarn(("Failed to parse document of next job received from AWS IoT Jobs service: "
-                        "Topic=%.*s, JobID=%.*s",
-                        pxPublishInfo->topicNameLength, pxPublishInfo->pTopicName,
-                        ulJobIdLength, pcJobId));
+                    LogWarn( ( "Failed to parse document of next job received from AWS IoT Jobs service: "
+                               "Topic=%.*s, JobID=%.*s",
+                               pxPublishInfo->topicNameLength, pxPublishInfo->pTopicName,
+                               ulJobIdLength, pcJobId ) );
                 }
                 else
                 {
                     /* Copy the Job document in buffer. This is done so that the MQTT connection buffer can
                      * be used for sending jobs status updates to the AWS IoT Jobs service. */
-                    memcpy(usJobsDocumentBuffer, pcJobDocLoc, ulJobDocLength);
+                    memcpy( usJobsDocumentBuffer, pcJobDocLoc, ulJobDocLength );
                     jobDocLength = ulJobDocLength;
 
                     xNewJobReceived = pdTRUE;
 
-                    xSemaphoreGive(xCustomJobDataSemaphore);
+                    xSemaphoreGive( xCustomJobDataSemaphore );
                 }
             }
         }
@@ -1172,7 +1172,6 @@ static void prvNextJobHandler( MQTTPublishInfo_t * pxPublishInfo )
 static void prvProcessIncomingJobMessage( void * pxSubscriptionContext,
                                           MQTTPublishInfo_t * pPublishInfo )
 {
-
     ( void ) pxSubscriptionContext;
 
     configASSERT( pPublishInfo != NULL );
@@ -1195,37 +1194,36 @@ static void prvProcessIncomingJobMessage( void * pxSubscriptionContext,
                               &jobIdLength );
     configASSERT( status == JobsSuccess );
 
-   
-        /* Upon successful return, the messageType has been filled in. */
-        if( ( api == JobsDescribeSuccess ) || ( api == JobsNextJobChanged ) )
-        {
-            /* Handler function to process payload. */
-            prvNextJobHandler( pPublishInfo );
-        }
-        else if( api == JobsUpdateSuccess )
-        {
-            LogInfo( ( "Job update status request has been accepted by AWS Iot Jobs service." ) );
-        }
-        else if( api == JobsStartNextFailed )
-        {
-            LogWarn( ( "Request for next job description rejected: RejectedResponse=%.*s.",
-                       pPublishInfo->payloadLength,
-                       ( const char * ) pPublishInfo->pPayload ) );
-        }
-        else if( api == JobsUpdateFailed )
-        {
-            LogWarn( ( "Request for job update rejected: RejectedResponse=%.*s.",
-                       pPublishInfo->payloadLength,
-                       ( const char * ) pPublishInfo->pPayload ) );
+    /* Upon successful return, the messageType has been filled in. */
+    if( ( api == JobsDescribeSuccess ) || ( api == JobsNextJobChanged ) )
+    {
+        /* Handler function to process payload. */
+        prvNextJobHandler( pPublishInfo );
+    }
+    else if( api == JobsUpdateSuccess )
+    {
+        LogInfo( ( "Job update status request has been accepted by AWS Iot Jobs service." ) );
+    }
+    else if( api == JobsStartNextFailed )
+    {
+        LogWarn( ( "Request for next job description rejected: RejectedResponse=%.*s.",
+                   pPublishInfo->payloadLength,
+                   ( const char * ) pPublishInfo->pPayload ) );
+    }
+    else if( api == JobsUpdateFailed )
+    {
+        LogWarn( ( "Request for job update rejected: RejectedResponse=%.*s.",
+                   pPublishInfo->payloadLength,
+                   ( const char * ) pPublishInfo->pPayload ) );
 
-            LogError( ( "Terminating demo as request to update job status has been rejected by "
-                        "AWS IoT Jobs service..." ) );
-        }
-        else
-        {
-            LogWarn( ( "Received an unexpected messages from AWS IoT Jobs service: "
-                       "JobsTopicType=%u", api ) );
-        }
+        LogError( ( "Terminating demo as request to update job status has been rejected by "
+                    "AWS IoT Jobs service..." ) );
+    }
+    else
+    {
+        LogWarn( ( "Received an unexpected messages from AWS IoT Jobs service: "
+                   "JobsTopicType=%u", api ) );
+    }
 }
 
 /*-----------------------------------------------------------*/
@@ -1622,7 +1620,7 @@ static void prvOTADemoTask( void * pvParam )
 
     xCustomJobDataSemaphore = xSemaphoreCreateMutex();
 
-    if (xCustomJobDataSemaphore == NULL)
+    if( xCustomJobDataSemaphore == NULL )
     {
         xResult = pdFAIL;
     }
@@ -1665,38 +1663,38 @@ static void prvOTADemoTask( void * pvParam )
         eventMsg.eventId = OtaAgentEventStart;
         OTA_SignalEvent( &eventMsg );
 
-        while( ( ( state = OTA_GetState() ) != OtaAgentStateStopped ) || 
-            (xExitActionJobReceived != pdTRUE))
+        while( ( ( state = OTA_GetState() ) != OtaAgentStateStopped ) ||
+               ( xExitActionJobReceived != pdTRUE ) )
         {
-            if (state != OtaAgentStateStopped)
+            if( state != OtaAgentStateStopped )
             {
                 /* Get OTA statistics for currently executing job. */
-                OTA_GetStatistics(&otaStatistics);
-                LogInfo((" Received: %u   Queued: %u   Processed: %u   Dropped: %u",
-                    otaStatistics.otaPacketsReceived,
-                    otaStatistics.otaPacketsQueued,
-                    otaStatistics.otaPacketsProcessed,
-                    otaStatistics.otaPacketsDropped));
+                OTA_GetStatistics( &otaStatistics );
+                LogInfo( ( " Received: %u   Queued: %u   Processed: %u   Dropped: %u",
+                           otaStatistics.otaPacketsReceived,
+                           otaStatistics.otaPacketsQueued,
+                           otaStatistics.otaPacketsProcessed,
+                           otaStatistics.otaPacketsDropped ) );
             }
 
-            if (xExitActionJobReceived == pdFALSE)
+            if( xExitActionJobReceived == pdFALSE )
             {
-                (void)xSemaphoreTake(xCustomJobDataSemaphore, portMAX_DELAY);
+                ( void ) xSemaphoreTake( xCustomJobDataSemaphore, portMAX_DELAY );
 
-                if (xNewJobReceived == pdTRUE)
+                if( xNewJobReceived == pdTRUE )
                 {
                     /* Process the Job document and execute the job. */
-                    prvProcessJobDocument(usJobIdBuffer,
-                        (uint16_t) jobIdLength,
-                        usJobsDocumentBuffer,
-                        jobDocLength);
+                    prvProcessJobDocument( usJobIdBuffer,
+                                           ( uint16_t ) jobIdLength,
+                                           usJobsDocumentBuffer,
+                                           jobDocLength );
 
                     xNewJobReceived = pdFALSE;
                 }
 
-                xSemaphoreGive(xCustomJobDataSemaphore);
-
+                xSemaphoreGive( xCustomJobDataSemaphore );
             }
+
             vTaskDelay( pdMS_TO_TICKS( otaexampleTASK_DELAY_MS ) );
         }
     }
