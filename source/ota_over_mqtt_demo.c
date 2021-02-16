@@ -1260,11 +1260,22 @@ static void prvSubscriptionCommandCallback( void * pxCommandContext,
         {
             /* Add subscription so that incoming publishes are routed to the application
              * callback. */
-            xSubscriptionAdded = addSubscription( ( SubscriptionElement_t * ) xGlobalMqttAgentContext.pIncomingCallbackContext,
-                                                  pxSubscriptionInfo->pxSubscribeArgs->pSubscribeInfo->pTopicFilter,
-                                                  pxSubscriptionInfo->pxSubscribeArgs->pSubscribeInfo->topicFilterLength,
-                                                  pxSubscriptionInfo->pxIncomingPublishCallback,
-                                                  NULL );
+            if (pxSubscriptionInfo->pxIncomingPublishCallback == prvProcessIncomingJobMessage)
+            {
+                xSubscriptionAdded = addSubscription((SubscriptionElement_t*)xGlobalMqttAgentContext.pIncomingCallbackContext,
+                    OTA_TOPIC_PREFIX democonfigCLIENT_IDENTIFIER "/"OTA_TOPIC_JOBS"/#",
+                    strlen(OTA_TOPIC_PREFIX democonfigCLIENT_IDENTIFIER "/"OTA_TOPIC_JOBS"/#"),
+                    pxSubscriptionInfo->pxIncomingPublishCallback,
+                    NULL);
+            }
+            else
+            {
+                xSubscriptionAdded = addSubscription((SubscriptionElement_t*)xGlobalMqttAgentContext.pIncomingCallbackContext,
+                    pxSubscriptionInfo->pxSubscribeArgs->pSubscribeInfo->pTopicFilter,
+                    pxSubscriptionInfo->pxSubscribeArgs->pSubscribeInfo->topicFilterLength,
+                    pxSubscriptionInfo->pxIncomingPublishCallback,
+                    NULL);
+            }
 
             if( xSubscriptionAdded == false )
             {
