@@ -629,8 +629,7 @@ static void otaAppCallback( OtaJobEvent_t event,
             LogError( ( "New image activation failed." ) );
 
             /* Shutdown OTA Agent without waiting. */
-            OTA_Shutdown( 0 );
-
+            OTA_Shutdown( 0, 0 );
 
             break;
 
@@ -682,7 +681,7 @@ static void otaAppCallback( OtaJobEvent_t event,
             LogError( ( "OTA Self-test failed for new image. shutting down OTA Agent." ) );
 
             /* Shutdown OTA Agent. */
-            OTA_Shutdown( 0 );
+            OTA_Shutdown( 0, 0 );
 
             break;
 
